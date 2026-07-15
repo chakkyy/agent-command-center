@@ -16,6 +16,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const readline = require('readline');
+const crypto = require('crypto');
 const { execSync } = require('child_process');
 
 // Store lives in the user's home (or $ACC_HOME); the package is read-only.
@@ -97,26 +98,43 @@ function gitBranch() { return sh('git rev-parse --abbrev-ref HEAD'); }
 function slug(s) {
   return String(s || '').replace(/[^A-Za-z0-9._@-]+/g, '_').replace(/^_+|_+$/g, '') || 'x';
 }
-// A "key" identifies a board item for read-tracking: entry:<project>/<branch> or signal:<id>
-function keyToFile(key) { return path.join(DIRS.seen, slug(key)); }
-function isSeen(key) { return fs.existsSync(keyToFile(key)); }
+function shortHash(s) { return crypto.createHash('sha1').update(String(s)).digest('hex').slice(0, 16); }
+// Injective, filesystem+grammar-safe encoding — the reversible counterpart to slug().
+// Keeps [A-Za-z0-9._-]; every other byte (incl. '/' and '~') → ~HH. So `feat/foo`
+// and `feat_foo` map to DISTINCT ids (slug collapses both to `feat_foo`). Guards
+// against a `.`/`..` segment ever becoming a path-traversal filename.
+function enc(s) {
+  let out = String(s == null ? '' : s).replace(/[^A-Za-z0-9._-]/g, c => '~' + c.charCodeAt(0).toString(16).padStart(2, '0'));
+  if (out === '' || out === 'x') out = out || 'x';
+  if (out === '.' || out === '..') out = out.replace(/\./g, '~2e'); // never a traversal segment
+  if (out.length > 150) out = out.slice(0, 120) + '~h' + shortHash(s); // bound filename length, stay unique
+  return out;
+}
+// A "key" identifies a board item for read-tracking: entry:<project>/<encBranch> or signal:<id>.
+// The seen marker filename is a hash of the key — collision-free even where slug() would clash.
+function keyToFile(key) { return path.join(DIRS.seen, 'k-' + shortHash(key)); }
+function legacyKeyFile(key) { return path.join(DIRS.seen, slug(key)); } // pre-hash markers
+function isSeen(key) { return fs.existsSync(keyToFile(key)) || fs.existsSync(legacyKeyFile(key)); }
 function markSeen(key) { writeAtomic(keyToFile(key), new Date().toISOString() + '\n'); }
-function clearSeen(key) { try { fs.unlinkSync(keyToFile(key)); } catch {} }
+function clearSeen(key) { try { fs.unlinkSync(keyToFile(key)); } catch {} try { fs.unlinkSync(legacyKeyFile(key)); } catch {} }
+
+// The on-disk path for an entry key — the single source of truth used by report,
+// prune, check and validKey, so they can never disagree.
+function entryPathFromKey(key) {
+  const rest = key.slice(6); // after "entry:"
+  const i = rest.indexOf('/');
+  return path.join(DIRS.entries, rest.slice(0, i), rest.slice(i + 1) + '.json');
+}
 
 // Strict grammar for a board key: `entry:<project>/<branch>` or `signal:<id>`.
-// The segments use the same charset as slug(), and the referenced item must exist —
-// so /seen and the `ccmd-read:` relay can never mint or traverse to arbitrary files.
-const SEG = '[A-Za-z0-9._@-]{1,120}';
+// `~` is allowed (the enc() escape). The referenced item must exist — so /seen and
+// the `ccmd-read:` relay can never mint or traverse to arbitrary files.
+const SEG = '[A-Za-z0-9._@~-]{1,160}';
 const KEY_RE = new RegExp(`^(?:entry:${SEG}/${SEG}|signal:${SEG})$`);
-function validKeyFormat(key) { return typeof key === 'string' && key.length <= 260 && KEY_RE.test(key); }
+function validKeyFormat(key) { return typeof key === 'string' && key.length <= 360 && KEY_RE.test(key); }
 function validKey(key) {
   if (!validKeyFormat(key)) return false;
-  if (key.startsWith('entry:')) {
-    const rest = key.slice(6);
-    const i = rest.indexOf('/');
-    const project = rest.slice(0, i), branch = rest.slice(i + 1);
-    return fs.existsSync(path.join(DIRS.entries, project, branch + '.json'));
-  }
+  if (key.startsWith('entry:')) return fs.existsSync(entryPathFromKey(key));
   const id = key.slice(7);
   return fs.existsSync(path.join(DIRS.signals, id + '.json'));
 }
@@ -164,14 +182,16 @@ function context(args) {
   const project = args.project || (top ? path.basename(top) : path.basename(process.cwd()));
   let branch = args.branch || (top ? gitBranch() : '') || args.label || path.basename(process.cwd());
   if (branch === 'HEAD' || !branch) branch = 'detached';
-  return { project: slug(project), branch: slug(branch), cwd: process.cwd() };
+  // rawBranch drives the collision-free key/id; branch (slug) stays for display.
+  return { project: slug(project), branch: slug(branch), rawBranch: String(branch), cwd: process.cwd() };
 }
 
 // ---------- commands: report / signal ----------
 function cmdReport(args) {
   ensureDirs();
-  const { project, branch, cwd } = context(args);
-  const key = `entry:${project}/${branch}`;
+  const { project, branch, rawBranch, cwd } = context(args);
+  const encB = enc(rawBranch);
+  const key = `entry:${project}/${encB}`;
   const status = String(args.status || 'IN_PROGRESS').toUpperCase().replace(/[^A-Z_]/g, '_');
   const entry = {
     key, project, branch, cwd,
@@ -188,8 +208,10 @@ function cmdReport(args) {
     note: args.note || null,
     updatedAt: new Date().toISOString(),
   };
-  const file = path.join(DIRS.entries, project, slug(branch) + '.json');
+  const file = entryPathFromKey(key);
   writeJSON(file, entry);
+  // Migrate away from the lossy slug filename for the same branch (avoids a duplicate row).
+  if (encB !== slug(branch)) { try { fs.unlinkSync(path.join(DIRS.entries, project, slug(branch) + '.json')); } catch {} }
   clearSeen(key); // a fresh update re-surfaces the row
   clearDemoMarker(); // a real report means this is no longer a demo store
   process.stdout.write(`reported ${project}/${branch} [${entry.status}]\n`);
@@ -313,8 +335,8 @@ function cmdGetUrl() { process.stdout.write((loadConfig().mirrorUrl || '') + '\n
 // ccmd check --since <epoch_ms>: does the cwd's entry exist and is it newer than --since?
 // Used by the Stop enforcement hook. Always exits 0.
 function cmdCheck(args) {
-  const { project, branch } = context(args);
-  const file = path.join(DIRS.entries, project, branch + '.json');
+  const { project, branch, rawBranch } = context(args);
+  const file = entryPathFromKey(`entry:${project}/${enc(rawBranch)}`);
   let exists = false, mtimeMs = null;
   try { const st = fs.statSync(file); exists = true; mtimeMs = Math.round(st.mtimeMs); } catch {}
   const since = Number(args.since || 0) || 0;
@@ -351,8 +373,8 @@ function cmdPrune(args) {
   for (const e of entries) {
     // With the read-relay feature off, "seen" has no meaning — only DONE is archived.
     if (e.status === 'DONE' || (seenOn && e.seen)) {
-      const src = path.join(DIRS.entries, e.project, slug(e.branch) + '.json');
-      writeJSON(path.join(DIRS.archive, `entry-${e.project}-${slug(e.branch)}-${Date.now()}.json`), e);
+      const src = entryPathFromKey(e.key);
+      writeJSON(path.join(DIRS.archive, `entry-${e.project}-${shortHash(e.key)}-${Date.now()}.json`), e);
       try { fs.unlinkSync(src); } catch {}
       clearSeen(e.key);
       archived++;
@@ -958,8 +980,8 @@ function cmdDemo(args) {
   for (const d of [DIRS.entries, DIRS.signals, DIRS.goals]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch {} }
   ensureDirs();
   const iso = (minsAgo) => new Date(Date.now() - minsAgo * 60000).toISOString();
-  const entry = (o) => writeJSON(path.join(DIRS.entries, o.project, slug(o.branch) + '.json'),
-    Object.assign({ key: `entry:${o.project}/${slug(o.branch)}`, done: [], inFlight: [], next: [], blockedOn: [] }, o));
+  const entry = (o) => { const key = `entry:${o.project}/${enc(o.branch)}`;
+    writeJSON(entryPathFromKey(key), Object.assign({ key, done: [], inFlight: [], next: [], blockedOn: [] }, o)); };
   entry({ project: 'acme-web', branch: 'feat/checkout-v2', status: 'IN_PROGRESS', agent: 'opus', tier: 'max',
     summary: 'Rebuilding the checkout as a 3-step flow; address + payment done, review step wired, running the Stripe test suite now.',
     task: 'PROJ-412 / PR #88', progress: '2/3 steps · CI green', inFlight: ['stripe test-mode e2e'], next: ['ship review step', 'copy pass'], updatedAt: iso(6) });
