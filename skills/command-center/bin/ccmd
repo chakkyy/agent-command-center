@@ -401,9 +401,26 @@ function cmdPrune(args) {
     clearSeen(e.key);
     archived++;
   }
+  capArchive();
   if (args.presence) { const c = loadConfig(); c.lastPresence = new Date().toISOString(); saveConfig(c); }
   cmdRender({ quiet: true });
   if (!args.quiet) process.stdout.write(`pruned ${archived} entr${archived === 1 ? 'y' : 'ies'}\n`);
+}
+
+// Retention: the archive is a convenience trail, not a system of record — keep it
+// bounded so a long-lived install can't grow without limit ($ACC_ARCHIVE_MAX to tune).
+function capArchive() {
+  const max = Math.max(0, parseInt(process.env.ACC_ARCHIVE_MAX || '2000', 10) || 2000);
+  let files;
+  try { files = fs.readdirSync(DIRS.archive).filter(f => f.endsWith('.json')); } catch { return; }
+  if (files.length <= max) return;
+  const withTime = files.map(f => {
+    let mt = 0; try { mt = fs.statSync(path.join(DIRS.archive, f)).mtimeMs; } catch {}
+    return { f, mt };
+  }).sort((a, b) => a.mt - b.mt); // oldest first
+  for (const { f } of withTime.slice(0, withTime.length - max)) {
+    try { fs.unlinkSync(path.join(DIRS.archive, f)); } catch {}
+  }
 }
 
 // ---------- products (grouping of repos, from config) ----------
@@ -1131,7 +1148,7 @@ function cmdHelp() {
   This binary ships inside the skill and is NOT on your PATH by default. Run it by
   absolute path, or run 'ccmd link' once to expose it as a real 'ccmd' command.
   ccmd link [--dir <bin>]                            # symlink this binary onto PATH (~/.local/bin)
-  ccmd install [--name ccmd] [--dir <commands>]      # write a Claude Code slash command (~/.claude/commands/ccmd.md)
+  ccmd install [--name ccmd] [--dir <commands>]      # Claude Code only: write a /ccmd slash command (~/.claude/commands/)
   ccmd where                                         # print this binary's absolute path
   ccmd init [--theme swiss|terminal|soft] [--accent "#0a84ff"] [--features goals,seen,mirror] [--product "id:Label:repo1,repo2"]…
                                                      # first-run setup; no flags + a TTY => wizard

@@ -61,6 +61,25 @@ ccmd init && ccmd serve                  # now plain `ccmd` works
 or without the link.
 </details>
 
+<details><summary>Codex &amp; other agents</summary>
+
+`ccmd` is a plain Node CLI — it works with any agent that can run a shell.
+
+- **Codex:** `npx skills add chakkyy/agent-command-center --agent codex` (add
+  `--global` for a global install). Codex invokes the skill as
+  `$command-center` (or `$command-center:command-center` when installed as a
+  plugin). It has `/goal` but no `/loop`.
+- **The `/ccmd` slash command (`ccmd install`) is Claude-Code-specific** — it
+  writes `~/.claude/commands/ccmd.md`. On other agents, run `ccmd` by path or
+  `ccmd link` it onto your `PATH`.
+- **Hooks are separate from the skill.** `npx skills add` installs the skill (the
+  reporting protocol); the enforcement [hooks](hooks/) are opt-in and installed
+  manually (they need `jq`, `git`, `bash`, and `/hooks` authorization in your
+  agent). Requires **Node ≥ 18**. The hooks assume Bash + a POSIX `/tmp`; on
+  Windows use the CLI without them.
+
+</details>
+
 ## How it works
 
 1. **Agents report themselves.** At the end of a turn, or the moment they're
