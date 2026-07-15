@@ -29,7 +29,11 @@
   var segBtns = seg ? [].slice.call(seg.querySelectorAll('button')) : [];
   var allPanels = panels ? [].slice.call(panels.querySelectorAll('.panel')) : [];
   function select(id) {
-    segBtns.forEach(function (b) { b.setAttribute('aria-selected', String(b.dataset.tab === id)); });
+    segBtns.forEach(function (b) {
+      var on = b.dataset.tab === id;
+      b.setAttribute('aria-selected', String(on));
+      b.tabIndex = on ? 0 : -1; // roving tabindex
+    });
     allPanels.forEach(function (p) {
       var on = p.dataset.tab === id;
       p.classList.toggle('on', on);

@@ -538,26 +538,28 @@ function buildHTML({ interactive, fragment }) {
   const showAck = feat('seen');
   const hasData = m.entries.length || m.signals.length;
 
-  // --- tabs
+  // --- tabs. Product tabs are namespaced `p-<id>` so a product named "overview"/
+  // "goals"/"command-center" can never collide with a reserved tab's DOM id.
+  const ptab = (pid) => 'p-' + pid;
   const tabDefs = [{ id: 'overview', label: 'Overview' }]
-    .concat(m.products.map(p => ({ id: p.id, label: p.label })));
+    .concat(m.products.map(p => ({ id: ptab(p.id), label: p.label })));
   if (showGoals) tabDefs.push({ id: 'goals', label: `Goals${m.goals.length ? ` · ${m.goals.filter(n => n.status === 'ready').length}` : ''}` });
   tabDefs.push({ id: 'command-center', label: 'Command Center' });
   const segHTML = tabDefs.map((t, i) =>
-    `<button role="tab" data-tab="${esc(t.id)}" aria-selected="${i === 0}">${esc(t.label)}</button>`).join('');
+    `<button role="tab" id="tab-${esc(t.id)}" data-tab="${esc(t.id)}" aria-controls="panel-${esc(t.id)}" aria-selected="${i === 0}" tabindex="${i === 0 ? '0' : '-1'}">${esc(t.label)}</button>`).join('');
 
   // --- panel: overview
   const prioHTML = m.prio.length
-    ? m.prio.map((r, i) => `<button class="row" type="button" data-jump="${esc(r.jump)}"${r.target ? ` data-target="${esc(r.target)}"` : ''} title="See the detail in the tab"><div class="num">${i + 1}</div><div style="min-width:0"><div class="t">${esc(r.t)}</div><div class="d">${r.d}</div></div><span class="chev">${UI.chevron}</span></button>`).join('')
+    ? m.prio.map((r, i) => `<button class="row" type="button" data-jump="${esc(ptab(r.jump))}"${r.target ? ` data-target="${esc(r.target)}"` : ''} title="See the detail in the tab"><div class="num">${i + 1}</div><div style="min-width:0"><div class="t">${esc(r.t)}</div><div class="d">${r.d}</div></div><span class="chev">${UI.chevron}</span></button>`).join('')
     : `<div class="empty">Nothing waiting on you right now. Blockers and questions land here.</div>`;
   const statsHTML = m.stats.map(s => `<div class="stat"><div class="v">${s.v}</div><div class="l">${esc(s.l)}</div></div>`).join('');
   const plistHTML = m.products.map(p => `
-        <button class="pcard" data-jump="${esc(p.id)}">
+        <button class="pcard" data-jump="${esc(ptab(p.id))}">
           <span class="pic">${iconFor(p.icon)}</span>
           <span class="pmain"><span class="pn">${esc(p.label)}</span><span class="pr"><b>${esc(p.countsLine)}</b>${p.summaryLine ? ' — ' + esc(brief(p.summaryLine, 90)) : ''}</span></span>
           <span class="pside"><span class="status ${p.summaryStatus[0]}"><span class="d"></span>${esc(p.summaryStatus[1])}</span><span class="chev">${UI.chevron}</span></span>
         </button>`).join('');
-  const overviewHTML = `<div class="panel on" role="tabpanel" data-tab="overview">
+  const overviewHTML = `<div class="panel on" role="tabpanel" id="panel-overview" aria-labelledby="tab-overview" data-tab="overview" tabindex="0">
     ${hasData ? `
     <section>
       <p class="kick">For you · when you're back</p>
@@ -581,7 +583,7 @@ function buildHTML({ interactive, fragment }) {
   const prodPanels = m.products.map(p => {
     const cards = p.signals.map(s => signalCard(s, iconFor(p.icon), showAck)).join('')
       + p.entries.map(e => entryCard(e, iconFor(p.icon), showAck)).join('');
-    return `<div class="panel" role="tabpanel" data-tab="${esc(p.id)}" hidden>
+    return `<div class="panel" role="tabpanel" id="panel-${esc(ptab(p.id))}" aria-labelledby="tab-${esc(ptab(p.id))}" data-tab="${esc(ptab(p.id))}" hidden tabindex="0">
       <p class="kick">${esc(p.label)} · ${esc(p.reposLine)}</p>
       <div class="stack">${cards}</div>
     </div>`;
@@ -625,7 +627,7 @@ function buildHTML({ interactive, fragment }) {
       const head = `<p class="kick" style="margin:${gi === 0 ? '0' : '30px'} 0 12px">${esc(g.prod.label)} · ${g.items.length} goal${g.items.length === 1 ? '' : 's'}${ready ? ` · ${ready} ready` : ''}</p>`;
       return head + `<div class="stack">${g.items.map(n => goalCard(n, g.prod)).join('')}</div>`;
     }).join('');
-    goalsHTML = `<div class="panel" role="tabpanel" data-tab="goals" hidden>
+    goalsHTML = `<div class="panel" role="tabpanel" id="panel-goals" aria-labelledby="tab-goals" data-tab="goals" hidden tabindex="0">
       <p class="kick">Goals · curated async work with a finish line</p>
       <h2>Work that runs while you sleep.</h2>
       <p class="sub">Agents spot the work that can run for hours without you, curate the full prompt with specs, links and a completion condition, and shelve it here. You pick one any night, fire it with Claude Code's <code>/goal</code>, and go — your live hours stay for the synchronous work.</p>
@@ -650,7 +652,7 @@ function buildHTML({ interactive, fragment }) {
     ] },
     { ver: 'why', t: 'We moved to local-first', d: 'This started life publishing an HTML mirror to a hosted artifact every turn. That was pure overhead — re-uploading the whole board on every report. The live <code>ccmd serve</code> at localhost is now the default; the mirror survives only as an optional adapter for teams that want a shared URL.', bullets: [] },
   ];
-  const commandCenterHTML = `<div class="panel" role="tabpanel" data-tab="command-center" hidden>
+  const commandCenterHTML = `<div class="panel" role="tabpanel" id="panel-command-center" aria-labelledby="tab-command-center" data-tab="command-center" hidden tabindex="0">
     <p class="kick">Command Center · the meta-project</p>
     <h2>The loop, in ${showAck ? 'four' : 'two'} steps</h2>
     <p class="sub">How state flows from the agents to your eyes, and back.</p>
@@ -953,8 +955,22 @@ function cmdLink(args) {
     try {
       fs.mkdirSync(d, { recursive: true });
       const link = path.join(d, 'ccmd');
-      try { fs.unlinkSync(link); } catch {}
-      fs.symlinkSync(target, link);
+      let st = null; try { st = fs.lstatSync(link); } catch {}
+      if (st) {
+        // Only replace something that is already a `ccmd` symlink — never clobber a
+        // real binary or a foreign file without --force (and back it up if we do).
+        let ours = false;
+        if (st.isSymbolicLink()) { try { ours = path.basename(fs.readlinkSync(link)) === 'ccmd'; } catch {} }
+        if (!ours && !args.force) {
+          process.stdout.write(`refusing to overwrite ${link} — it isn't a ccmd symlink.\n  Re-run with --force (backed up to ccmd.bak) or use --dir <other>.\n`);
+          process.exitCode = 1; return;
+        }
+        if (!ours) { try { fs.renameSync(link, link + '.bak'); } catch {} } else { try { fs.unlinkSync(link); } catch {} }
+      }
+      // atomic replace: create a temp symlink then rename over the target
+      const tmp = link + '.tmp-' + process.pid + '-' + Date.now();
+      fs.symlinkSync(target, tmp);
+      fs.renameSync(tmp, link);
       process.stdout.write(`linked ccmd -> ${link}\n`);
       if (pathDirs.includes(d)) process.stdout.write(`  ${d} is on your PATH — 'ccmd' is ready.\n`);
       else process.stdout.write(`  ${d} is NOT on your PATH yet. Add:  export PATH="${d}:$PATH"\n`);
@@ -962,6 +978,7 @@ function cmdLink(args) {
     } catch { /* try the next dir */ }
   }
   process.stdout.write(`could not create the link. Run ccmd by its absolute path:\n  ${target}\n`);
+  process.exitCode = 1;
 }
 
 function cmdWhere() { process.stdout.write(path.resolve(__filename) + '\n'); }
@@ -977,16 +994,23 @@ The Command Center CLI (\`ccmd\`) is bundled at this absolute path:
 \`${target}\`
 
 Run \`${target} $ARGUMENTS\` with the Bash tool, **from the current repository** so
-its git project/branch context is right. If \`$ARGUMENTS\` is empty, run
-\`${target} serve\` (start it in the background) and give me the
-http://localhost:7777 URL.
+its git project/branch context is right.
+
+\`serve\` is a long-running process. Do NOT silently background it — the user should
+own that process. When asked to serve (or when \`$ARGUMENTS\` is empty), either give
+the user the exact command to run in their own terminal:
+
+    ${target} serve      # → http://localhost:7777  (Ctrl-C to stop)
+
+…or ask whether they'd like you to start it in the background for them. Let them choose.
 
 Notes: \`ccmd\` writes only to the local store under \`$ACC_HOME\` (default
-\`~/.agents-command-center\`) and never needs the network. \`serve\` is long-running —
-run it in the background. For the full reporting protocol (when to report / signal
-/ shelve goals), load the \`command-center\` skill. Never hand-edit the board HTML.
+\`~/.agents-command-center\`) and never needs the network. For the full reporting
+protocol (when to report / signal / shelve goals), load the \`command-center\`
+skill. Never hand-edit the board HTML.
 `;
 }
+const INSTALL_SIG = 'run the ccmd status-board CLI'; // stable marker: a slash file we wrote
 function cmdInstall(args) {
   const target = path.resolve(__filename);
   const name = args.name ? slug(String(args.name)).toLowerCase() : 'ccmd';
@@ -994,10 +1018,20 @@ function cmdInstall(args) {
   try {
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, name + '.md');
-    fs.writeFileSync(file, slashCommandBody(target, name));
+    if (fs.existsSync(file)) {
+      let cur = ''; try { cur = fs.readFileSync(file, 'utf8'); } catch {}
+      const ours = cur.includes(INSTALL_SIG);
+      if (!ours && !args.force) {
+        process.stdout.write(`refusing to overwrite /${name} at ${file} — it wasn't created by ccmd.\n  Re-run with --force (a .bak is kept) or use --name <other>.\n`);
+        process.exitCode = 1; return;
+      }
+      if (!ours && args.force) { try { fs.copyFileSync(file, file + '.bak'); } catch {} }
+    }
+    writeAtomic(file, slashCommandBody(target, name)); // atomic (temp + rename)
     process.stdout.write(`wrote /${name} slash command -> ${file}\n  In Claude Code, type: /${name} serve   (or /${name} goal …, /${name} report …)\n`);
   } catch (e) {
     process.stdout.write(`could not write the slash command (${e.message}). Skipping.\n`);
+    process.exitCode = 1;
   }
 }
 
