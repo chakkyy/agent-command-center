@@ -31,6 +31,10 @@ const DIRS = {
   goals: path.join(HOME, 'goals'),
 };
 const CONFIG_PATH = path.join(HOME, 'config.json');
+// User presence is volatile state with its OWN file: hooks write it on every
+// prompt, and a read-modify-write on config.json would race (and clobber)
+// concurrent human edits to the config.
+const PRESENCE_PATH = path.join(HOME, '.presence');
 const DASHBOARD_PATH = path.join(HOME, 'dashboard.html');
 const DEMO_MARKER = path.join(HOME, '.demo-store'); // present only in a store seeded by `ccmd demo`
 
@@ -81,7 +85,6 @@ function defaultConfig() {
     accent: DEFAULT_ACCENT,
     features: Object.assign({}, DEFAULT_FEATURES),
     mirrorUrl: null,
-    lastPresence: null,
     staleMs: STALE_MS,
   };
 }
@@ -219,6 +222,12 @@ function cmdReport(args) {
     updatedAt: new Date().toISOString(),
   };
   const file = entryPathFromKey(key);
+  // Two sessions on the same project/branch: before overwriting a FRESH row from
+  // a DIFFERENT cwd, archive it — last-write-wins must never silently drop a report.
+  const prev = readJSON(file, null);
+  if (prev && prev.cwd && prev.cwd !== entry.cwd && Date.now() - Date.parse(prev.updatedAt || 0) < 10 * 60 * 1000) {
+    writeJSON(path.join(DIRS.archive, `entry-${project}-${encB}-overlap-${Date.now()}.json`), prev);
+  }
   writeJSON(file, entry);
   // Migrate away from the lossy slug filename for the same branch (avoids a duplicate row).
   if (encB !== slug(branch)) { try { fs.unlinkSync(path.join(DIRS.entries, project, slug(branch) + '.json')); } catch {} }
@@ -412,7 +421,7 @@ function cmdPrune(args) {
     archived++;
   }
   capArchive();
-  if (args.presence) { const c = loadConfig(); c.lastPresence = new Date().toISOString(); saveConfig(c); }
+  if (args.presence) writeAtomic(PRESENCE_PATH, new Date().toISOString() + '\n'); // never via config.json
   cmdRender({ quiet: true });
   if (!args.quiet) process.stdout.write(`pruned ${archived} entr${archived === 1 ? 'y' : 'ies'}\n`);
 }
