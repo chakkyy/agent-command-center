@@ -34,3 +34,18 @@ test('prune --presence writes .presence and never touches config.json', () => {
       'config.json byte-identical (no read-modify-write race surface)');
   } finally { rm(home); }
 });
+
+test('IN_PROGRESS gone quiet past zombieMs is flagged as possibly hung', () => {
+  const home = tmpHome();
+  try {
+    ccmd(['report', '--project', 'p', '--branch', 'main', '--summary', 'working'], { home, cwd: home });
+    const f = path.join(home, 'entries', 'p', 'main.json');
+    const row = readJSON(f);
+    row.updatedAt = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(); // 3h quiet
+    fs.writeFileSync(f, JSON.stringify(row));
+    const d = JSON.parse(ccmd(['data'], { home }).stdout);
+    const item = d.products.find(p => p.id === 'p').items[0];
+    assert.equal(item.status[0], 'need');
+    assert.match(item.status[1], /Possibly hung/);
+  } finally { rm(home); }
+});

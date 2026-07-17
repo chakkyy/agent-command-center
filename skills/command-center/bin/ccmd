@@ -481,11 +481,16 @@ function linkify(escaped) {
 }
 
 // UI status: worst state wins. stale (no update > staleMs, not DONE) => idle.
-function uiStatus(e, staleMs, now) {
-  const stale = e.status !== 'DONE' && (now - new Date(e.updatedAt).getTime()) > staleMs;
+// Zombie: IN_PROGRESS work gone quiet is not idle — the session probably died
+// mid-task. Flagged before the stale threshold so it gets eyes (config.zombieMs).
+const ZOMBIE_MS = 2 * 60 * 60 * 1000;
+function uiStatus(e, staleMs, now, zombieMs = ZOMBIE_MS) {
+  const quiet = now - new Date(e.updatedAt).getTime();
+  const stale = e.status !== 'DONE' && quiet > staleMs;
   if (stale) return { cls: 'idle', label: 'No signal · ' + timeAgo(e.updatedAt), stale: true };
   if (e.status === 'BLOCKED') return { cls: 'need', label: 'Needs you', stale: false };
   if (e.status === 'DONE') return { cls: 'ready', label: 'Ready', stale: false };
+  if (quiet > zombieMs) return { cls: 'need', label: '⚠️ Possibly hung · ' + timeAgo(e.updatedAt), stale: false };
   return { cls: 'doing', label: 'In progress', stale: false };
 }
 const CLS_RANK = { need: 0, doing: 1, ready: 2, idle: 3 };
@@ -506,7 +511,7 @@ function boardModel() {
   const seenOn = feat('seen');
   // Entries: a read report drops off the board (only when the feature is on).
   const visEntries = entries.filter(e => seenOn ? !e.seen : true)
-    .map(e => Object.assign({}, e, { ui: uiStatus(e, staleMs, now) }))
+    .map(e => Object.assign({}, e, { ui: uiStatus(e, staleMs, now, cfg.zombieMs || ZOMBIE_MS) }))
     .sort((a, b) => (CLS_RANK[a.ui.cls] - CLS_RANK[b.ui.cls]) || (a.updatedAt < b.updatedAt ? 1 : -1));
   // Signals leave the board only when RESOLVED. "read" just dims them and drops
   // them from the urgency surfaces — an unresolved blocker/question stays visible.
