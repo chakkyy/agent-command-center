@@ -29,6 +29,7 @@ const DIRS = {
   seen: path.join(HOME, 'seen'),
   archive: path.join(HOME, 'archive'),
   goals: path.join(HOME, 'goals'),
+  journal: path.join(HOME, 'journal'),
 };
 const CONFIG_PATH = path.join(HOME, 'config.json');
 // User presence is volatile state with its OWN file: hooks write it on every
@@ -200,6 +201,51 @@ function context(args) {
 }
 
 // ---------- commands: report / signal ----------
+// ---------- journal (append-only history) ----------
+// Rows in entries/ are OVERWRITTEN by every report (the board shows the now);
+// the journal keeps every event with its timestamp for historical views such as
+// `ccmd catchup`. Monthly-rotated JSONL: journal/YYYY-MM.jsonl. O_APPEND writes
+// of these small lines are atomic, so concurrent reporters never interleave.
+function journalFile(d) {
+  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0');
+  return path.join(DIRS.journal, `${y}-${m}.jsonl`);
+}
+function journalAppend(ev) {
+  try {
+    fs.mkdirSync(DIRS.journal, { recursive: true, mode: 0o700 });
+    fs.appendFileSync(journalFile(new Date()), JSON.stringify(ev) + '\n', { mode: 0o600 });
+  } catch {} // the journal must never break a report
+}
+function journalRead(from, to) {
+  const out = [];
+  let files = [];
+  try { files = fs.readdirSync(DIRS.journal).filter(f => /^\d{4}-\d{2}\.jsonl$/.test(f)).sort(); } catch { return out; }
+  const lo = path.basename(journalFile(from)), hi = path.basename(journalFile(to));
+  for (const f of files) {
+    if (f < lo || f > hi) continue;
+    let raw = '';
+    try { raw = fs.readFileSync(path.join(DIRS.journal, f), 'utf8'); } catch { continue; }
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const ev = JSON.parse(line);
+        const t = new Date(ev.ts).getTime();
+        if (t >= from.getTime() && t < to.getTime()) out.push(ev);
+      } catch {} // a torn line never breaks history reads
+    }
+  }
+  return out;
+}
+// The https URL of the current repo's origin — lets catchup map a worktree's
+// project name (e.g. feat-x-worktree) back to the repo it belongs to.
+function repoHttpsUrl() {
+  const u = sh('git config --get remote.origin.url');
+  if (!u) return null;
+  const m = u.match(/^git@([^:]+):(.+?)(\.git)?$/);
+  if (m) return `https://${m[1]}/${m[2]}`;
+  return u.replace(/\.git$/, '').replace(/^http:/, 'https:') || null;
+}
+
 function cmdReport(args) {
   ensureDirs();
   const { project, branch, rawBranch, cwd } = context(args);
@@ -229,6 +275,12 @@ function cmdReport(args) {
     writeJSON(path.join(DIRS.archive, `entry-${project}-${encB}-overlap-${Date.now()}.json`), prev);
   }
   writeJSON(file, entry);
+  journalAppend({
+    ts: entry.updatedAt, project, branch,
+    status: entry.status, summary: entry.summary, task: entry.task,
+    done: entry.done, next: entry.next, blocked: entry.blockedOn, note: entry.note,
+    repo: repoHttpsUrl(),
+  });
   // Migrate away from the lossy slug filename for the same branch (avoids a duplicate row).
   if (encB !== slug(branch)) { try { fs.unlinkSync(path.join(DIRS.entries, project, slug(branch) + '.json')); } catch {} }
   clearSeen(key); // a fresh update re-surfaces the row
@@ -375,6 +427,47 @@ function cmdCheck(args) {
 
 // ---------- gather board state from disk ----------
 function safeReaddir(d) { try { return fs.readdirSync(d); } catch { return []; } }
+// ---------- catchup: cold-start context in one command ----------
+// An agent starting cold runs `ccmd catchup [project]` and gets what happened:
+// recent journal events for the whole product (worktree project names mapped
+// back to their repo via the origin URL stored on each event), the live board
+// rows and the open signals — instead of re-deriving context or repeating
+// finished work.
+function cmdCatchup(args) {
+  const project = args._[0] || context(args).project;
+  const n = Math.max(1, parseInt(args.n || '15', 10) || 15);
+  const prod = productFor(project);
+  const projects = new Set(prod.repos.includes(project) ? prod.repos : [project]);
+  const knownRepos = new Set(products().flatMap(p => p.repos));
+  const repoBase = ev => (ev.repo ? String(ev.repo).replace(/\/+$/, '').split('/').pop() : null);
+  const since = new Date(Date.now() - 14 * 24 * 3600 * 1000);
+  // an explicit --project on the report wins; the repo fallback only maps
+  // UNKNOWN project names (worktrees), so cross-product reports don't double-count
+  const evs = journalRead(since, new Date())
+    .filter(ev => projects.has(ev.project) || (!knownRepos.has(ev.project) && projects.has(repoBase(ev))))
+    .slice(-n);
+  const out = [`— catchup ${prod.label} (${[...projects].join(', ')}) · last 14 days —`];
+  out.push('', evs.length ? `Journal (${evs.length} events, old→new):` : 'Journal: no events in the last 14 days.');
+  for (const ev of evs) {
+    const when = String(ev.ts || '').slice(0, 16).replace('T', ' ');
+    out.push(`[${when}] ${ev.project}${ev.branch ? '/' + ev.branch : ''} ${ev.status || ''}: ${ev.summary || '(no summary)'}`);
+    if ((ev.next || []).length) out.push(`    → next: ${ev.next.join('; ')}`);
+    if ((ev.blocked || []).length) out.push(`    ⛔ blocked on: ${ev.blocked.join('; ')}`);
+  }
+  const { entries, signals } = collect();
+  const rows = entries.filter(e => projects.has(e.project));
+  if (rows.length) {
+    out.push('', 'Live board rows:');
+    for (const e of rows) out.push(`• ${e.project}/${e.branch} [${e.status}] ${e.summary || ''}${e.seen ? ' (✓ seen)' : ''}`);
+  }
+  const open = signals.filter(s => projects.has(s.project));
+  if (open.length) {
+    out.push('', 'Open signals (ccmd resolve <id> when cleared):');
+    for (const s of open) out.push(`• [${s.kind}] ${s.id}${s.seen ? ' (✓ seen)' : ''}: ${s.msg}`);
+  }
+  process.stdout.write(out.join('\n') + '\n');
+}
+
 function collect() {
   ensureDirs();
   const entries = [];
@@ -1183,6 +1276,8 @@ function cmdHelp() {
   ccmd resolve <id>
   ccmd goal --title "…" --summary "…" [--prompt-path f] [--links "u;u"] [--prereqs "…"] [--hours N] [--status ready|waiting|draft] [--project p]
   ccmd goal --done <id>                              # curated async-work shelf (pairs with Claude Code's /goal)
+  ccmd catchup [project] [--n 15]                    # cold-start context: recent journal for the product
+                                                     # (worktrees included) + live rows + open signals
   ccmd render                                        # regenerate dashboard.html
   ccmd prune [--presence]                            # archive DONE/read entries
   ccmd read                                          # stdin: a "ccmd-read: k1, k2" line → marks read (validated, no shell)
@@ -1228,6 +1323,7 @@ function main() {
       case 'set-url': return cmdSetUrl(args);
       case 'get-url': return cmdGetUrl();
       case 'goal': return cmdGoal(args);
+  case 'catchup': return cmdCatchup(args);
       case 'loop': // deprecated alias — the feature was renamed to "goals"
         process.stderr.write("ccmd: 'loop' was renamed to 'goal' — use 'ccmd goal'. (running it for you)\n");
         return cmdGoal(args);

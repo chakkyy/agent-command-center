@@ -214,4 +214,9 @@ If `$ACC_HOME/config.json` is missing, set it up before the first report:
   time-awareness util (separate plugin): `claude plugin marketplace add
   chakkyy/agent-utils` → `/plugin install time-awareness@agent-utils`.
 
+**Starting cold in a repo (no context on what happened)?** Run
+`ccmd catchup [project]` first: it prints the product's recent journal events
+(worktree reports included), the live board rows and the open signals — read it
+before re-deriving context by hand or repeating work that's already done.
+
 Full command surface: [reference.md](reference.md).

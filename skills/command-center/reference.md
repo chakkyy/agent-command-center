@@ -85,6 +85,20 @@ completion condition is met.
 > notice), a `features.loops` key in `config.json` is honored as `goals`, and an
 > existing `loops/` store dir is migrated to `goals/` on first run.
 
+## Journal & catchup (history)
+
+```
+ccmd catchup [project] [--n 15]   # cold-start context in one command
+```
+
+Board rows are overwritten by every report (the board shows the *now*); the
+**journal** keeps every report as an append-only event in monthly-rotated
+`journal/YYYY-MM.jsonl` files — nothing to configure, it just accumulates.
+`catchup` reads it back: the product's recent events (a report made from a git
+worktree is attributed to its repo via the origin URL stored on the event),
+plus the live board rows and open signals. An agent starting cold should run it
+before re-deriving context by hand or repeating finished work.
+
 ## Read tracking
 
 ```
